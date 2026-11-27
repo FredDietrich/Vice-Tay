@@ -136,14 +136,18 @@ struct MouseLook {
 #[cfg(any(windows, test))]
 impl MouseLook {
     fn sample(&mut self, mouse: Option<MouseState>, sensitivity: f32) -> PadState {
-        let position = mouse.map(|state| (state.position_x, state.position_y));
-        let previous = std::mem::replace(&mut self.previous, position);
-        let (Some((x, y)), Some((old_x, old_y))) = (position, previous) else {
+        let Some(mouse) = mouse else {
+            self.previous = None;
             return PadState::default();
         };
+        let (x, y) = (mouse.position_x, mouse.position_y);
+        let (old_x, old_y) = self.previous.replace((x, y)).unwrap_or((x, y));
         PadState {
             right_x: (x.saturating_sub(old_x) as f32 * sensitivity).clamp(-1.0, 1.0),
             right_y: (-(y.saturating_sub(old_y) as f32) * sensitivity).clamp(-1.0, 1.0),
+            // The first two GameInput mouse button bits are left and right.
+            right_trigger: if mouse.buttons & 1 != 0 { 1.0 } else { 0.0 },
+            left_trigger: if mouse.buttons & 2 != 0 { 1.0 } else { 0.0 },
             ..PadState::default()
         }
     }
@@ -547,6 +551,11 @@ impl State {
         let mut events = std::mem::take(&mut self.pending);
         self.update(devices, MOUSE, mouse.map(Value::Mouse), now, &mut events);
         let any_pad = pads.iter().any(Option::is_some);
+        #[cfg(feature = "diagnostics")]
+        if !any_pad && (mouse_stick.right_x != 0.0 || mouse_stick.right_y != 0.0) {
+            static REPORTED: std::sync::Once = std::sync::Once::new();
+            REPORTED.call_once(|| tracing::info!("mouse motion reached the fallback gamepad right stick"));
+        }
         let stand_in = || {
             let keyboard = fallback(&keys);
             if any_pad {
@@ -1616,6 +1625,10 @@ mod tests {
         assert_eq!(look.sample(at(12, 299), 0.25), PadState::default());
         assert_eq!(look.sample(None, 0.25), PadState::default());
         assert_eq!(look.sample(at(999, 1120), 0.25), PadState::default());
+        let buttons = Some(MouseState { buttons: 3, ..Default::default() });
+        let pressed = look.sample(buttons, 0.25);
+        assert_eq!((pressed.left_trigger, pressed.right_trigger), (1.0, 1.0));
+        assert_eq!(look.sample(None, 0.25), PadState::default());
     }
 
     #[test]

@@ -35,10 +35,13 @@ Pass `-More @{VICTORY_MOUSE_LOOK='1'}` to map mouse motion to the right stick
 of the fallback gamepad when no physical controller is connected. Motion
 stops when the window loses focus. Set `VICTORY_MOUSE_SENS` to tune the stick
 response per mouse count (default `0.045`).
+The mouse's left and right buttons drive the fallback pad's right and left
+triggers. A diagnostics build reports the first motion routed to the stick.
 
 Add `VICTORY_MOUSE_CAPTURE='1'` to the same `-More` table to hide and confine
 the pointer to the focused title window. Switch away with Alt+Tab to release
-the pointer.
+the pointer. Moving or resizing the window also releases it until that
+operation ends.
 
 For a matched colour-grading comparison on NVIDIA, use the same build, scene,
 render settings and warmed driver cache in two runs. Set

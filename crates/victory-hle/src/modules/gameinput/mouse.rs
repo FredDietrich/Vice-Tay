@@ -2,6 +2,7 @@
 
 use std::io;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use windows_sys::Win32::Foundation::{
@@ -60,6 +61,7 @@ struct CursorClip {
 }
 
 static CURSOR_CLIP: Mutex<Option<CursorClip>> = Mutex::new(None);
+static MOVING_OR_SIZING: AtomicUsize = AtomicUsize::new(0);
 
 fn same_rect(a: &RECT, b: &RECT) -> bool {
     (a.left, a.top, a.right, a.bottom) == (b.left, b.top, b.right, b.bottom)
@@ -89,7 +91,7 @@ pub(in crate::modules) fn release_cursor(window: HWND) {
 }
 
 pub(in crate::modules) fn sync_cursor(window: HWND) {
-    if !*CLIP_ENABLED {
+    if !*CLIP_ENABLED || MOVING_OR_SIZING.load(Ordering::Relaxed) == window as usize {
         return;
     }
     let mut rect = RECT::default();
@@ -147,6 +149,25 @@ pub(in crate::modules) fn sync_cursor(window: HWND) {
         if unsafe { GetForegroundWindow() } != window {
             release_cursor(window);
         }
+    }
+}
+
+/// Let Windows move the pointer with the window's resize handle.
+pub(in crate::modules) fn move_or_size(window: HWND, active: bool) {
+    if !*CLIP_ENABLED {
+        return;
+    }
+    if active {
+        MOVING_OR_SIZING.store(window as usize, Ordering::Relaxed);
+        release_cursor(window);
+    } else {
+        let _ = MOVING_OR_SIZING.compare_exchange(
+            window as usize,
+            0,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+        sync_cursor(window);
     }
 }
 
@@ -240,6 +261,9 @@ pub(in crate::modules) fn attach(window: HWND) {
 }
 
 pub(in crate::modules) fn detach(window: HWND) {
+    release_cursor(window);
+    let _ =
+        MOVING_OR_SIZING.compare_exchange(window as usize, 0, Ordering::Relaxed, Ordering::Relaxed);
     if !enabled() {
         return;
     }

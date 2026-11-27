@@ -553,7 +553,9 @@ extern "system" fn window_proc(
     if title_window {
         match message {
             wm::WM_INPUT => mouse::receive(hwnd, wparam, lparam),
-            wm::WM_KILLFOCUS | wm::WM_NCDESTROY => mouse::release_cursor(hwnd),
+            wm::WM_KILLFOCUS => mouse::release_cursor(hwnd),
+            wm::WM_ENTERSIZEMOVE => mouse::move_or_size(hwnd, true),
+            wm::WM_EXITSIZEMOVE => mouse::move_or_size(hwnd, false),
             wm::WM_ACTIVATE if wparam & 0xffff == wm::WA_INACTIVE as usize => {
                 mouse::release_cursor(hwnd);
             }
