@@ -31,9 +31,32 @@ struct Capture {
     state: MouseState,
 }
 
-static ENABLED: LazyLock<bool> =
+static GAMEINPUT_MOUSE: LazyLock<bool> =
     LazyLock::new(|| std::env::var_os("VICTORY_GAMEPAD_MOUSE").is_some_and(|v| v == "1"));
+static LOOK_SENSITIVITY: LazyLock<Option<f32>> = LazyLock::new(|| {
+    std::env::var_os("VICTORY_MOUSE_LOOK")
+        .is_some_and(|v| v == "1")
+        .then(|| {
+            std::env::var("VICTORY_MOUSE_SENS")
+                .ok()
+                .and_then(|value| value.trim().parse::<f32>().ok())
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .unwrap_or(0.045)
+        })
+});
 static CAPTURE: LazyLock<Mutex<Capture>> = LazyLock::new(|| Mutex::new(Capture::default()));
+
+pub(super) fn gameinput_enabled() -> bool {
+    *GAMEINPUT_MOUSE
+}
+
+pub(super) fn look_sensitivity() -> Option<f32> {
+    *LOOK_SENSITIVITY
+}
+
+fn enabled() -> bool {
+    gameinput_enabled() || look_sensitivity().is_some()
+}
 
 /// Raw Input is process-wide. Inspect the registrations before adding ours.
 fn registered_mouse() -> io::Result<Option<RAWINPUTDEVICE>> {
@@ -76,7 +99,7 @@ fn register(window: HWND, flags: u32) -> io::Result<()> {
 }
 
 pub(in crate::modules) fn attach(window: HWND) {
-    if !*ENABLED {
+    if !enabled() {
         return;
     }
     match registered_mouse() {
@@ -101,7 +124,7 @@ pub(in crate::modules) fn attach(window: HWND) {
 }
 
 pub(in crate::modules) fn detach(window: HWND) {
-    if !*ENABLED {
+    if !enabled() {
         return;
     }
     {
@@ -122,7 +145,7 @@ pub(in crate::modules) fn detach(window: HWND) {
 
 /// Observe a foreground mouse packet without taking it from the title's procedure.
 pub(in crate::modules) fn receive(window: HWND, wparam: WPARAM, lparam: LPARAM) {
-    if !*ENABLED || wparam & 0xff != RIM_INPUT as usize {
+    if !enabled() || wparam & 0xff != RIM_INPUT as usize {
         return;
     }
     let mut capture = lock(&CAPTURE);
@@ -181,7 +204,7 @@ fn accumulate(state: &mut MouseState, mouse: RAWMOUSE) {
 }
 
 pub(super) fn sample() -> Option<MouseState> {
-    if !*ENABLED {
+    if !enabled() {
         return None;
     }
     // SAFETY: plain foreground window and physical button queries.

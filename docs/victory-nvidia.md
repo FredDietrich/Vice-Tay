@@ -31,6 +31,11 @@ The diagnostics build reports the first relative mouse movement received by the
 title window and the first successful GameInput mouse state read. Move the
 mouse while the in-game camera is active and check for both messages.
 
+Pass `-More @{VICTORY_MOUSE_LOOK='1'}` to map mouse motion to the right stick
+of the fallback gamepad when no physical controller is connected. Motion
+stops when the window loses focus. Set `VICTORY_MOUSE_SENS` to tune the stick
+response per mouse count (default `0.045`).
+
 For a matched colour-grading comparison on NVIDIA, use the same build, scene,
 render settings and warmed driver cache in two runs. Set
 `-More @{VICTORY_LIBRARY_STATIC_SAMPLERS='1'}` in the control run to use the
