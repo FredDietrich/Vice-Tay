@@ -1399,10 +1399,10 @@ pub(crate) fn writes(start: usize, end: usize, guarded: bool) -> Option<(u64, Ve
         }
         return Some(fresh());
     }
-    // Renderer port #6: view memory, which the kernel would refuse, and the
-    // caller does not ask the guards (textures, which then guard by a way of
-    // their own): no kernel call, ~300 a frame (run guard-2).
-    if !guarded && refused_as_view(start, end) {
+    // Keep the direct-query shortcut under renderer port #6. The default view
+    // cache can skip batched queries, but a direct unguarded query has no
+    // guard fallback if the address was reused for a private allocation.
+    if !guarded && port_guard() && refused_as_view(start, end) {
         return None;
     }
     // Asked, and the answer noted, with the range held: nothing else asks
@@ -1421,7 +1421,14 @@ pub(crate) fn writes(start: usize, end: usize, guarded: bool) -> Option<(u64, Ve
     }
     let refused = protected || viewed;
     let pages = match if refused { None } else { kernel_written(first, last) } {
-        Some(pages) => pages,
+        Some(pages) => {
+            if !guarded {
+                // The kernel recognised write-watch, so later batch queries
+                // must not skip the range because of a previous view.
+                forget_views(first, last);
+            }
+            pages
+        }
         None => {
             guards_asked = true;
             if !guarded {
@@ -5241,6 +5248,32 @@ mod tests {
 
     /// Of a page taken before, what is taken again is the kernel's pages
     /// written since; where they are not known, all of it.
+    #[test]
+    fn direct_write_watch_query_handles_a_reused_view_address() {
+        if port_guard() {
+            return;
+        }
+        let _one = one_asking_test();
+        // SAFETY: a private, write-watched allocation owned by this test.
+        let at = unsafe {
+            VirtualAlloc(std::ptr::null(), PAGE, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE)
+        } as usize;
+        assert_ne!(at, 0);
+        // Simulate a cached view at an address now occupied by private memory.
+        let block = at / BLOCK;
+        VIEWS.set(block);
+        // SAFETY: a byte in the committed test allocation.
+        unsafe { (at as *mut u8).write_volatile(1) };
+        let found = writes(at, at + PAGE, false);
+        let still_cached = VIEWS.any(block, block + 1);
+        forget_views(block, block + 1);
+        // SAFETY: release the allocation after clearing its cached view.
+        assert_ne!(unsafe { VirtualFree(at as *mut _, 0, MEM_RELEASE) }, 0);
+        let (_, notes) = found.expect("a cached view cannot hide a private write-watch query");
+        assert!(!still_cached, "batch queries must see the new private allocation");
+        assert!(notes.iter().any(|&(page, _)| page == at / PAGE));
+    }
+
     #[test]
     fn what_is_taken_again_is_what_was_written() {
         // SAFETY: a fresh write-watched allocation, freed at the end.
