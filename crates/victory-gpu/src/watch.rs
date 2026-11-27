@@ -867,13 +867,29 @@ fn note_shared(written: &[(usize, u16)]) -> u64 {
     now
 }
 
+/// Whether known view memory skips `GetWriteWatch` even without
+/// `VICTORY_PORT_GUARD=1` (`VICTORY_SKIP_VIEW_ASK=0` disables; on by default).
+/// Avoids ~215 refused kernel askings per frame (and binary-search halving of
+/// combined ranges) without enabling `PORT_GUARD`'s parallel `mprotect` path.
+fn skip_view_ask() -> bool {
+    if port_guard() {
+        return true;
+    }
+    #[cfg(feature = "diagnostics")]
+    if let Some(on) = crate::ab::pick("VICTORY_SKIP_VIEW_ASK") {
+        return on;
+    }
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_SKIP_VIEW_ASK").is_none_or(|v| v != "0"))
+}
+
 /// Whether the kernel would refuse to ask about `[start, end)` for its view
 /// memory (renderer port #6): read-only by our hand, or known a view
 /// ([`VIEWS`]). Such a range is left to [`writes`], which goes to the guards
 /// at once; asked with others it failed their asking too, which was then
 /// asked again by halves.
 fn refused_as_view(start: usize, end: usize) -> bool {
-    if !port_guard() || !light() {
+    if !skip_view_ask() || !light() {
         return false;
     }
     let (first, last) = (start / BLOCK, end.div_ceil(BLOCK));
@@ -1755,7 +1771,7 @@ static VIEWS: Bits = Bits::new();
 /// Whether a block of `[first, last)` is known view memory and the kernel
 /// need not be asked ([`VIEWS`]).
 fn known_views(first: usize, last: usize) -> bool {
-    port_guard() && light() && VIEWS.any(first, last)
+    skip_view_ask() && light() && VIEWS.any(first, last)
 }
 
 /// A bit per block of the address space, in pieces made when first needed
@@ -2857,11 +2873,10 @@ fn guard(start: usize, end: usize) -> Option<Vec<usize>> {
         }
     }
     let rest = rest();
+    if skip_view_ask() && !VIEWS.all(first, last) {
+        (first..last).for_each(|block| VIEWS.set(block));
+    }
     if port_guard() {
-        // (Renderer port #6: known for a view from now on.)
-        if !VIEWS.all(first, last) {
-            (first..last).for_each(|block| VIEWS.set(block));
-        }
         return Some(guard_shared(first, last, &came, rest));
     }
     let mut g = guards_timed();
