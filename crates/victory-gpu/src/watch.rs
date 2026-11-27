@@ -1768,6 +1768,33 @@ pub(crate) fn port_guard_line(frames: f64) {
 /// find it no view ([`is_view`]) and say the range is not watched.
 static VIEWS: Bits = Bits::new();
 
+/// Blocks reserved as placeholders by `victory-hle::modules::xmem`.
+/// Under Wine/Proton `NtQueryVirtualMemory(MemoryRegionInformationEx = 7)`
+/// is unimplemented, so tracking placeholder reservations directly lets
+/// `known_holes()` work without ~13,700 `VirtualQuery` syscalls per frame.
+static PLACEHOLDERS: Bits = Bits::new();
+
+/// The runtime reserved placeholder memory at `[at, at + len)`.
+pub fn title_memory_placeholder(at: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let (first, last) = (at / BLOCK, at.saturating_add(len).div_ceil(BLOCK));
+    for block in first..last {
+        PLACEHOLDERS.set(block);
+    }
+}
+
+fn forget_placeholders(first: usize, last: usize) {
+    if !PLACEHOLDERS.any(first, last) {
+        return;
+    }
+    let set: Vec<usize> = PLACEHOLDERS.set_in(first, last).collect();
+    for block in set {
+        PLACEHOLDERS.clear(block);
+    }
+}
+
 /// Whether a block of `[first, last)` is known view memory and the kernel
 /// need not be asked ([`VIEWS`]).
 fn known_views(first: usize, last: usize) -> bool {
@@ -2159,6 +2186,9 @@ fn known_holes() -> bool {
 /// to be only by mapping a view (or an allocation) in its place, which an
 /// ordinary commit cannot do.
 fn placeholder(block: usize) -> bool {
+    if PLACEHOLDERS.any(block, block + 1) {
+        return true;
+    }
     /// `MEMORY_REGION_INFORMATION` (ntddk).
     #[repr(C)]
     #[derive(Default)]
@@ -2203,7 +2233,11 @@ fn placeholder(block: usize) -> bool {
 /// The runtime gave the title memory at `[at, at + len)`, allocated or
 /// committed: what was known of holes there is asked again.
 pub fn title_memory_allocated(at: usize, len: usize) {
-    if len == 0 || !known_holes() {
+    if len == 0 {
+        return;
+    }
+    forget_placeholders(at / BLOCK, at.saturating_add(len).div_ceil(BLOCK));
+    if !known_holes() {
         return;
     }
     let g = guards();
@@ -3790,11 +3824,14 @@ pub fn title_memory_unmapping(at: usize, len: usize) {
 /// was noted of its blocks (guarded, clean, absent) would be taken for true
 /// of the next memory at the address.
 pub fn title_memory_freed(at: usize, len: usize) {
-    if len != 0 {
-        forget_views(at / BLOCK, at.saturating_add(len).div_ceil(BLOCK));
-    } else if VIEWS.any(at / BLOCK, at / BLOCK + 1) {
-        forget_views(at / BLOCK, allocation_end(at, at).div_ceil(BLOCK).max(at / BLOCK + 1));
-    }
+    let first = at / BLOCK;
+    let freed_end = if len != 0 {
+        at.saturating_add(len).div_ceil(BLOCK)
+    } else {
+        allocation_end(at, at).div_ceil(BLOCK).max(first + 1)
+    };
+    forget_views(first, freed_end);
+    forget_placeholders(first, freed_end);
     let mut g = guards();
     let first = at / BLOCK;
     let noted = [g.protected.range(first..).next(), g.absent.range(first..).next(), g.foreign.range(first..).next().copied()];
